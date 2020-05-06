@@ -141,7 +141,7 @@ func (a *stateAccessor) SetCompositeState(state *State) error {
 type Reconciler struct {
 	Log    logr.Logger
 	Client client.Client
-	Schema *runtime.Scheme
+	Scheme *runtime.Scheme
 }
 
 // Reconcile child resources of a composite resource.
@@ -167,7 +167,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, selector labels.Selector, pa
 			desiredKinds = append(desiredKinds, gvk)
 		}
 
-		err = controllerutil.SetControllerReference(parent, child, r.Schema)
+		err = controllerutil.SetControllerReference(parent, child, r.Scheme)
 		if err != nil {
 			return &permanentError{err}
 		}
