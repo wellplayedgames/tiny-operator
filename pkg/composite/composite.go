@@ -19,6 +19,7 @@ import (
 
 const (
 	compositeStateKey = "hive.wellplayed.games/composite-state"
+	parentLabel       = "hive.wellplayed.games/composite-parent"
 )
 
 type permanentError struct {
@@ -145,9 +146,14 @@ type Reconciler struct {
 }
 
 // Reconcile child resources of a composite resource.
-func (r *Reconciler) Reconcile(ctx context.Context, selector labels.Selector, parent TypedObject, children []TypedObject) error {
+func (r *Reconciler) Reconcile(ctx context.Context, parent TypedObject, children []TypedObject) error {
 	log := r.Log
 	acc := AccessState(parent)
+
+	parentKey := string(parent.GetUID())
+	selector := labels.SelectorFromSet(labels.Set{
+		parentLabel: parentKey,
+	})
 
 	state, err := acc.GetCompositeState()
 	if err != nil {
@@ -158,6 +164,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, selector labels.Selector, pa
 	desiredKinds := make([]schema.GroupVersionKind, 0, len(children))
 
 	for _, child := range children {
+		// Add GVK of resource to the list of GVKs we are processing.
 		gvk := child.GetObjectKind().GroupVersionKind()
 		idx := kindIndex(desiredKinds, gvk.GroupKind())
 
@@ -167,6 +174,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, selector labels.Selector, pa
 			desiredKinds = append(desiredKinds, gvk)
 		}
 
+		// Associate with parent.
+		labels := child.GetLabels()
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		labels[parentLabel] = parentKey
+		child.SetLabels(labels)
+
+		// Set resource owner to parent.
 		err = controllerutil.SetControllerReference(parent, child, r.Scheme)
 		if err != nil {
 			return &permanentError{err}
