@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
@@ -165,7 +166,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, parent TypedObject, children
 
 	for _, child := range children {
 		// Add GVK of resource to the list of GVKs we are processing.
-		gvk := child.GetObjectKind().GroupVersionKind()
+		gvk, err := apiutil.GVKForObject(child, r.Scheme)
+		if err != nil {
+			return &permanentError{err}
+		}
+
 		idx := kindIndex(desiredKinds, gvk.GroupKind())
 
 		if idx >= 0 {
