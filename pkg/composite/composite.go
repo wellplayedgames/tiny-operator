@@ -195,6 +195,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, parent TypedObject, children
 	}
 
 	if state.EnsureKinds(desiredKinds) {
+		acc.SetCompositeState(state)
 		if err := r.Client.Update(ctx, parent); err != nil {
 			return err
 		}
@@ -210,7 +211,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, parent TypedObject, children
 			continue
 		}
 
-		err = r.Client.Update(ctx, child)
+		err = r.Client.Patch(ctx, child, client.Merge)
 		if errors.IsNotFound(err) {
 			err = r.Client.Create(ctx, child)
 		}
@@ -234,6 +235,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, parent TypedObject, children
 		}
 
 		err = list.EachListItem(func(obj runtime.Object) error {
+			kind := obj.GetObjectKind()
+			kind.SetGroupVersionKind(gvk)
+
 			acc, err := meta.Accessor(obj)
 			if err != nil {
 				return err
@@ -254,6 +258,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, parent TypedObject, children
 	// Remove old types from state.
 	if len(state.DeployedKinds) != len(desiredKinds) {
 		state.DeployedKinds = desiredKinds
+		acc.SetCompositeState(state)
 		if err := r.Client.Update(ctx, parent); err != nil {
 			return err
 		}
