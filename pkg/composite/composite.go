@@ -238,7 +238,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, parent TypedObject, children
 
 	// Destroy all old objects.
 	for _, gvk := range state.DeployedKinds {
-		var list unstructured.Unstructured
+		var list unstructured.UnstructuredList
 		list.SetGroupVersionKind(gvk)
 
 		match := client.MatchingLabelsSelector{Selector: selector}
