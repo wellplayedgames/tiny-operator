@@ -203,7 +203,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, parent TypedObject, children
 
 	// Update or create all child objects.
 	desiredUIDs := make([]types.UID, 0, len(children))
-	for _, child := range children {
+	for childIdx, child := range children {
 		acc, err := meta.Accessor(child)
 
 		if err != nil {
@@ -211,8 +211,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, parent TypedObject, children
 			continue
 		}
 
+		existingCopy := child.DeepCopyObject().(TypedObject)
+
 		err = r.Client.Patch(ctx, child, client.Merge)
 		if errors.IsNotFound(err) {
+			// Reset the child here because Patch can cause changes to the
+			// resource which prevents it from being created!
+			children[childIdx] = existingCopy
+			child = existingCopy
+			acc, err = meta.Accessor(child)
+
+			if err != nil {
+				log.Error(err, "failed to access child metadata")
+				continue
+			}
+
 			err = r.Client.Create(ctx, child)
 		}
 
