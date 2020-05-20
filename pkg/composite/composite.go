@@ -16,6 +16,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
+	tinyerrors "github.com/wellplayedgames/tiny-operator/pkg/errors"
 )
 
 const (
@@ -147,9 +149,21 @@ type Reconciler struct {
 }
 
 // Reconcile child resources of a composite resource.
-func (r *Reconciler) Reconcile(ctx context.Context, parent TypedObject, children []TypedObject) error {
+func (r *Reconciler) Reconcile(ctx context.Context, parent TypedObject, children []TypedObject, dryRun bool) error {
 	log := r.Log
 	acc := AccessState(parent)
+
+	var createOptions []client.CreateOption
+	var updateOptions []client.UpdateOption
+	var patchOptions []client.PatchOption
+	var deleteOptions []client.DeleteOption
+
+	if dryRun {
+		createOptions = []client.CreateOption{client.DryRunAll}
+		updateOptions = []client.UpdateOption{client.DryRunAll}
+		patchOptions = []client.PatchOption{client.DryRunAll}
+		deleteOptions = []client.DeleteOption{client.DryRunAll}
+	}
 
 	parentKey := string(parent.GetUID())
 	selector := labels.SelectorFromSet(labels.Set{
@@ -196,24 +210,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, parent TypedObject, children
 
 	if state.EnsureKinds(desiredKinds) {
 		acc.SetCompositeState(state)
-		if err := r.Client.Update(ctx, parent); err != nil {
+		if err := r.Client.Update(ctx, parent, updateOptions...); err != nil {
 			return err
 		}
 	}
 
 	// Update or create all child objects.
+	var passError error
 	desiredUIDs := make([]types.UID, 0, len(children))
 	for childIdx, child := range children {
 		acc, err := meta.Accessor(child)
 
 		if err != nil {
 			log.Error(err, "failed to access child metadata")
-			continue
+			return &permanentError{err}
 		}
 
 		existingCopy := child.DeepCopyObject().(TypedObject)
 
-		err = r.Client.Patch(ctx, child, client.Merge)
+		err = r.Client.Patch(ctx, child, client.Merge, patchOptions...)
 		if errors.IsNotFound(err) {
 			// Reset the child here because Patch can cause changes to the
 			// resource which prevents it from being created!
@@ -223,14 +238,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, parent TypedObject, children
 
 			if err != nil {
 				log.Error(err, "failed to access child metadata")
-				continue
+				return &permanentError{err}
 			}
 
-			err = r.Client.Create(ctx, child)
+			err = r.Client.Create(ctx, child, createOptions...)
 		}
 
 		if err != nil {
-			return err
+			passError = tinyerrors.Append(passError, err)
 		}
 
 		desiredUIDs = append(desiredUIDs, acc.GetUID())
@@ -253,26 +268,36 @@ func (r *Reconciler) Reconcile(ctx context.Context, parent TypedObject, children
 
 			acc, err := meta.Accessor(obj)
 			if err != nil {
-				return err
+				log.Error(err, "failed to access child metadata")
+				return &permanentError{err}
 			}
 
 			if hasUID(desiredUIDs, acc.GetUID()) {
 				return nil
 			}
 
-			return r.Client.Delete(ctx, obj)
+			err = r.Client.Delete(ctx, obj, deleteOptions...)
+			if err != nil {
+				passError = tinyerrors.Append(passError, err)
+			}
+
+			return nil
 		})
 		if err != nil {
-			log.Error(err, "failed decide which items to delete")
-			return &permanentError{err}
+			return err
 		}
+	}
+
+	// If updating any resources failed, fail now.
+	if passError != nil {
+		return passError
 	}
 
 	// Remove old types from state.
 	if len(state.DeployedKinds) != len(desiredKinds) {
 		state.DeployedKinds = desiredKinds
 		acc.SetCompositeState(state)
-		if err := r.Client.Update(ctx, parent); err != nil {
+		if err := r.Client.Update(ctx, parent, updateOptions...); err != nil {
 			return err
 		}
 	}

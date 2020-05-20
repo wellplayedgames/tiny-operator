@@ -86,7 +86,7 @@ var _ = Describe("Composite", func() {
 				Scheme: scheme.Scheme,
 			}
 
-			err := reconciler.Reconcile(ctx, &parentResource, children)
+			err := reconciler.Reconcile(ctx, &parentResource, children, false)
 			Expect(err).ToNot(HaveOccurred())
 
 			err = k8sClient.Get(ctx, parentKey, &parentResource)
@@ -182,7 +182,7 @@ var _ = Describe("Composite", func() {
 			},
 		}
 
-		err = reconciler.Reconcile(ctx, &parentResource, childrenA)
+		err = reconciler.Reconcile(ctx, &parentResource, childrenA, false)
 		Expect(err).ToNot(HaveOccurred())
 
 		err = k8sClient.Get(ctx, parentKey, &parentResource)
@@ -206,7 +206,7 @@ var _ = Describe("Composite", func() {
 			},
 		}
 
-		err = reconciler.Reconcile(ctx, &parentResource, childrenB)
+		err = reconciler.Reconcile(ctx, &parentResource, childrenB, false)
 		Expect(err).ToNot(HaveOccurred())
 
 		err = k8sClient.Get(ctx, parentKey, &parentResource)
