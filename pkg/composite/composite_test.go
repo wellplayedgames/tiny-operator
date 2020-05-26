@@ -9,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -22,7 +23,7 @@ var _ = Describe("Composite", func() {
 	Context("reconciling newly created resource", func() {
 		var parentResource unstructured.Unstructured
 		var parentKey types.NamespacedName
-		var children []TypedObject
+		var children []runtime.Object
 
 		BeforeEach(func() {
 			parentResource = unstructured.Unstructured{}
@@ -38,7 +39,7 @@ var _ = Describe("Composite", func() {
 				Name:      parentResource.GetName(),
 			}
 
-			children = []TypedObject{
+			children = []runtime.Object{
 				&corev1.Service{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "service-1",
@@ -165,7 +166,7 @@ var _ = Describe("Composite", func() {
 
 		By("reconciling initial children")
 
-		childrenA := []TypedObject{
+		childrenA := []runtime.Object{
 			&corev1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "my-service",
@@ -197,7 +198,7 @@ var _ = Describe("Composite", func() {
 
 		By("reconciling second set of children")
 
-		childrenB := []TypedObject{
+		childrenB := []runtime.Object{
 			&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "my-config-map",

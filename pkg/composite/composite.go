@@ -87,12 +87,6 @@ func (s *State) EnsureKinds(kinds []schema.GroupVersionKind) bool {
 	return madeChanges
 }
 
-// TypedObject combines the Type and Object interfaces
-type TypedObject interface {
-	runtime.Object
-	metav1.Object
-}
-
 // StateAccessor is a type which can access the composite state of an object.
 type StateAccessor interface {
 	GetCompositeState() (*State, error)
@@ -149,9 +143,14 @@ type Reconciler struct {
 }
 
 // Reconcile child resources of a composite resource.
-func (r *Reconciler) Reconcile(ctx context.Context, parent TypedObject, children []TypedObject, dryRun bool) error {
+func (r *Reconciler) Reconcile(ctx context.Context, parent runtime.Object, children []runtime.Object, dryRun bool) error {
+	parentMeta, err := meta.Accessor(parent)
+	if err != nil {
+		return &permanentError{err}
+	}
+
 	log := r.Log
-	acc := AccessState(parent)
+	acc := AccessState(parentMeta)
 
 	var createOptions []client.CreateOption
 	var updateOptions []client.UpdateOption
@@ -165,7 +164,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, parent TypedObject, children
 		deleteOptions = []client.DeleteOption{client.DryRunAll}
 	}
 
-	parentKey := string(parent.GetUID())
+	parentKey := string(parentMeta.GetUID())
 	selector := labels.SelectorFromSet(labels.Set{
 		parentLabel: parentKey,
 	})
@@ -193,22 +192,27 @@ func (r *Reconciler) Reconcile(ctx context.Context, parent TypedObject, children
 			desiredKinds = append(desiredKinds, gvk)
 		}
 
+		meta, err := meta.Accessor(child)
+		if err != nil {
+			return &permanentError{err}
+		}
+
 		// Associate with parent.
-		labels := child.GetLabels()
+		labels := meta.GetLabels()
 		if labels == nil {
 			labels = map[string]string{}
 		}
 		labels[parentLabel] = parentKey
-		child.SetLabels(labels)
+		meta.SetLabels(labels)
 
 		// Set resource owner to parent.
-		err = controllerutil.SetControllerReference(parent, child, r.Scheme)
+		err = controllerutil.SetControllerReference(parentMeta, meta, r.Scheme)
 		if err != nil {
 			return &permanentError{err}
 		}
 	}
 
-	if state.EnsureKinds(desiredKinds) {
+	if state.EnsureKinds(desiredKinds) && !dryRun {
 		acc.SetCompositeState(state)
 		if err := r.Client.Update(ctx, parent, updateOptions...); err != nil {
 			return err
@@ -219,33 +223,28 @@ func (r *Reconciler) Reconcile(ctx context.Context, parent TypedObject, children
 	var passError error
 	desiredUIDs := make([]types.UID, 0, len(children))
 	for childIdx, child := range children {
-		acc, err := meta.Accessor(child)
+
+		tempCopy := child.DeepCopyObject()
+
+		err = r.Client.Patch(ctx, tempCopy, client.Merge, patchOptions...)
+		if errors.IsNotFound(err) {
+			// Reset the child here because Patch can cause changes to the
+			// resource which prevents it from being created!
+			tempCopy = child.DeepCopyObject()
+			err = r.Client.Create(ctx, tempCopy, createOptions...)
+		}
+
+		if err == nil && !dryRun {
+			children[childIdx] = tempCopy
+		} else if err != nil {
+			passError = tinyerrors.Append(passError, err)
+		}
+
+		acc, err := meta.Accessor(tempCopy)
 
 		if err != nil {
 			log.Error(err, "failed to access child metadata")
 			return &permanentError{err}
-		}
-
-		existingCopy := child.DeepCopyObject().(TypedObject)
-
-		err = r.Client.Patch(ctx, child, client.Merge, patchOptions...)
-		if errors.IsNotFound(err) {
-			// Reset the child here because Patch can cause changes to the
-			// resource which prevents it from being created!
-			children[childIdx] = existingCopy
-			child = existingCopy
-			acc, err = meta.Accessor(child)
-
-			if err != nil {
-				log.Error(err, "failed to access child metadata")
-				return &permanentError{err}
-			}
-
-			err = r.Client.Create(ctx, child, createOptions...)
-		}
-
-		if err != nil {
-			passError = tinyerrors.Append(passError, err)
 		}
 
 		desiredUIDs = append(desiredUIDs, acc.GetUID())
@@ -294,7 +293,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, parent TypedObject, children
 	}
 
 	// Remove old types from state.
-	if len(state.DeployedKinds) != len(desiredKinds) {
+	if (len(state.DeployedKinds) != len(desiredKinds)) && !dryRun {
 		state.DeployedKinds = desiredKinds
 		acc.SetCompositeState(state)
 		if err := r.Client.Update(ctx, parent, updateOptions...); err != nil {

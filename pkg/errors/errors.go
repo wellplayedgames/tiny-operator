@@ -3,8 +3,12 @@ package errors
 import (
 	"strings"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 )
 
 // A CompositeError is an error formed from multiple other errors.
@@ -109,4 +113,72 @@ func AllErrors(err error, pred func(error) bool) bool {
 	}
 
 	return true
+}
+
+func findResource(scheme *runtime.Scheme, resources []runtime.Object, target *metav1.StatusDetails) runtime.Object {
+	for _, resource := range resources {
+		meta, err := meta.Accessor(resource)
+		if err != nil {
+			continue
+		}
+
+		gvk, err := apiutil.GVKForObject(resource, scheme)
+		if err != nil {
+			continue
+		}
+
+		if target.UID != meta.GetUID() {
+			continue
+		}
+
+		if target.Group != gvk.Group {
+			continue
+		}
+
+		if target.Kind != gvk.Kind {
+			continue
+		}
+
+		return resource
+	}
+
+	return nil
+}
+
+// ResolveStatuses tries to resolve all statuses in the given error with an
+// action function. If any status cannot be resolved, an error is returned.
+func ResolveStatuses(
+	scheme *runtime.Scheme,
+	resources []runtime.Object,
+	action func(obj runtime.Object, err *errors.StatusError) error,
+	err error,
+) error {
+	statuses, onlyStatuses := APIStatuses(err)
+	if !onlyStatuses {
+		return err
+	}
+
+	matchedResources := make([]runtime.Object, len(statuses))
+
+	for idx, status := range statuses {
+		matched := findResource(scheme, resources, status.Details)
+		if matched == nil {
+			return err
+		}
+
+		matchedResources[idx] = matched
+	}
+
+	for idx, status := range statuses {
+		resource := matchedResources[idx]
+		statusErr := &errors.StatusError{
+			ErrStatus: status,
+		}
+		err := action(resource, statusErr)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
