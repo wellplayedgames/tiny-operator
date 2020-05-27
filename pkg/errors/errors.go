@@ -145,9 +145,9 @@ func findResource(scheme *runtime.Scheme, resources []runtime.Object, target *me
 	return nil
 }
 
-// ResolveStatuses tries to resolve all statuses in the given error with an
+// ResolveErrorStatuses tries to resolve all statuses in the given error with an
 // action function. If any status cannot be resolved, an error is returned.
-func ResolveStatuses(
+func ResolveErrorStatuses(
 	scheme *runtime.Scheme,
 	resources []runtime.Object,
 	action func(obj runtime.Object, err *errors.StatusError) error,
