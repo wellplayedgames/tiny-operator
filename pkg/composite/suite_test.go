@@ -3,6 +3,7 @@ package composite
 import (
 	"context"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -84,6 +85,11 @@ var _ = BeforeSuite(func(done Done) {
 
 	err = k8sClient.Create(ctx, &crd)
 	Expect(err).ToNot(HaveOccurred())
+
+	time.Sleep(250 * time.Millisecond)
+
+	Eventually(func() error { return k8sClient.Get(ctx, client.ObjectKey{ Name: crd.Name }, &crd) }).
+		Should(Succeed())
 
 	close(done)
 }, 60)
