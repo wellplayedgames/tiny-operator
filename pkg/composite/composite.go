@@ -3,6 +3,7 @@ package composite
 import (
 	"context"
 	"encoding/json"
+	"github.com/wellplayedgames/tiny-operator/pkg/patch"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -226,7 +227,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, parent runtime.Object, child
 
 		tempCopy := child.DeepCopyObject()
 
-		err = r.Client.Patch(ctx, tempCopy, client.Merge, patchOptions...)
+		_, err = patch.MaybePatch(ctx, r.Client, tempCopy, client.Merge, patchOptions...)
 		if errors.IsNotFound(err) {
 			// Reset the child here because Patch can cause changes to the
 			// resource which prevents it from being created!
