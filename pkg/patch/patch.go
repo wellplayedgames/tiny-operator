@@ -18,7 +18,7 @@ func IsPatchRequired(newObj runtime.Object, patch client.Patch) (bool, error) {
 }
 
 // MaybePatch will patch an object if the patch does not produce a no-op
-func MaybePatch(ctx context.Context, client client.Client, newObj runtime.Object, patch client.Patch) (bool, error) {
+func MaybePatch(ctx context.Context, client client.Client, newObj runtime.Object, patch client.Patch, opts ...client.PatchOption) (bool, error) {
 	required, err := IsPatchRequired(newObj, patch)
 	if err != nil {
 		return false, fmt.Errorf("unable to build patch: %v", err)
@@ -28,11 +28,11 @@ func MaybePatch(ctx context.Context, client client.Client, newObj runtime.Object
 		return false, nil
 	}
 
-	return true, client.Patch(ctx, newObj, patch)
+	return true, client.Patch(ctx, newObj, patch, opts...)
 }
 
 // MaybePatchStatus will patch an object's status if the patch does not produce a no-op
-func MaybePatchStatus(ctx context.Context, client client.Client, newObj runtime.Object, patch client.Patch) (bool, error) {
+func MaybePatchStatus(ctx context.Context, client client.Client, newObj runtime.Object, patch client.Patch, opts ...client.PatchOption) (bool, error) {
 	required, err := IsPatchRequired(newObj, patch)
 	if err != nil {
 		return false, fmt.Errorf("unable to build patch: %v", err)
@@ -42,5 +42,5 @@ func MaybePatchStatus(ctx context.Context, client client.Client, newObj runtime.
 		return false, nil
 	}
 
-	return true, client.Status().Patch(ctx, newObj, patch)
+	return true, client.Status().Patch(ctx, newObj, patch, opts...)
 }
