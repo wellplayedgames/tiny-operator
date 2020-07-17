@@ -2,6 +2,7 @@ package composite
 
 import (
 	"context"
+	"k8s.io/apimachinery/pkg/api/meta"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -23,6 +24,7 @@ var _ = Describe("Composite", func() {
 	Context("reconciling newly created resource", func() {
 		var parentResource unstructured.Unstructured
 		var parentKey types.NamespacedName
+		var sourceChildren []runtime.Object
 		var children []runtime.Object
 
 		BeforeEach(func() {
@@ -39,7 +41,7 @@ var _ = Describe("Composite", func() {
 				Name:      parentResource.GetName(),
 			}
 
-			children = []runtime.Object{
+			sourceChildren = []runtime.Object{
 				&corev1.Service{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "service-1",
@@ -49,6 +51,7 @@ var _ = Describe("Composite", func() {
 						Ports: []corev1.ServicePort{
 							{
 								Name: "http",
+								Protocol: corev1.ProtocolTCP,
 								Port: 80,
 							},
 						},
@@ -63,11 +66,17 @@ var _ = Describe("Composite", func() {
 						Ports: []corev1.ServicePort{
 							{
 								Name: "http",
+								Protocol: corev1.ProtocolTCP,
 								Port: 80,
 							},
 						},
 					},
 				},
+			}
+
+			children = make([]runtime.Object, len(sourceChildren))
+			for idx, child := range sourceChildren {
+				children[idx] = child.DeepCopyObject()
 			}
 		})
 
@@ -80,8 +89,9 @@ var _ = Describe("Composite", func() {
 			Expect(err).ToNot(HaveOccurred())
 		})
 
+		var reconciler Reconciler
 		BeforeEach(func() {
-			reconciler := Reconciler{
+			reconciler = Reconciler{
 				Client: k8sClient,
 				Log:    zap.New(zap.UseDevMode(true)),
 				Scheme: scheme.Scheme,
@@ -131,6 +141,31 @@ var _ = Describe("Composite", func() {
 
 			Expect(svc.Labels[parentLabel]).To(Equal(string(parentResource.GetUID())))
 		})
+
+		It("shouldn't update ResourceVersion on next reconciliation", func() {
+			rvs := make([]string, len(children))
+			for idx, child := range children {
+				m, err := meta.Accessor(child)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(m.GetResourceVersion()).ToNot(BeEmpty())
+
+				rvs[idx] = m.GetResourceVersion()
+			}
+
+			for idx, child := range sourceChildren {
+				children[idx] = child.DeepCopyObject()
+			}
+
+			err := reconciler.Reconcile(ctx, &parentResource, children, false)
+			Expect(err).ToNot(HaveOccurred())
+
+			for idx, child := range children {
+				m, err := meta.Accessor(child)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(m.GetResourceVersion()).ToNot(BeEmpty())
+				Expect(m.GetResourceVersion()).To(Equal(rvs[idx]))
+			}
+		})
 	})
 
 	It("should clean up old kinds", func() {
@@ -176,6 +211,7 @@ var _ = Describe("Composite", func() {
 					Ports: []corev1.ServicePort{
 						{
 							Name: "http",
+							Protocol: corev1.ProtocolTCP,
 							Port: 80,
 						},
 					},
