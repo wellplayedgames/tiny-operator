@@ -2,12 +2,11 @@ package composite
 
 import (
 	"context"
-	"k8s.io/apimachinery/pkg/api/meta"
-
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -16,6 +15,10 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+)
+
+const (
+	owner = "games.wellplayed.composite"
 )
 
 var _ = Describe("Composite", func() {
@@ -97,7 +100,7 @@ var _ = Describe("Composite", func() {
 				Scheme: scheme.Scheme,
 			}
 
-			err := reconciler.Reconcile(ctx, &parentResource, children, false)
+			err := reconciler.Reconcile(ctx, owner, &parentResource, children, false)
 			Expect(err).ToNot(HaveOccurred())
 
 			err = k8sClient.Get(ctx, parentKey, &parentResource)
@@ -156,7 +159,7 @@ var _ = Describe("Composite", func() {
 				children[idx] = child.DeepCopyObject()
 			}
 
-			err := reconciler.Reconcile(ctx, &parentResource, children, false)
+			err := reconciler.Reconcile(ctx, owner, &parentResource, children, false)
 			Expect(err).ToNot(HaveOccurred())
 
 			for idx, child := range children {
@@ -165,6 +168,23 @@ var _ = Describe("Composite", func() {
 				Expect(m.GetResourceVersion()).ToNot(BeEmpty())
 				Expect(m.GetResourceVersion()).To(Equal(rvs[idx]))
 			}
+		})
+
+		It("should not override non-applied fields", func() {
+			svc := children[0].(*corev1.Service)
+			svc.Spec.Type = corev1.ServiceTypeLoadBalancer
+			err := k8sClient.Update(ctx, svc)
+			Expect(err).ToNot(HaveOccurred())
+
+			for idx, child := range sourceChildren {
+				children[idx] = child.DeepCopyObject()
+			}
+
+			err = reconciler.Reconcile(ctx, owner, &parentResource, children, false)
+			Expect(err).ToNot(HaveOccurred())
+
+			svc = children[0].(*corev1.Service)
+			Expect(svc.Spec.Type).To(Equal(corev1.ServiceTypeLoadBalancer))
 		})
 	})
 
@@ -219,7 +239,7 @@ var _ = Describe("Composite", func() {
 			},
 		}
 
-		err = reconciler.Reconcile(ctx, &parentResource, childrenA, false)
+		err = reconciler.Reconcile(ctx, owner, &parentResource, childrenA, false)
 		Expect(err).ToNot(HaveOccurred())
 
 		err = k8sClient.Get(ctx, parentKey, &parentResource)
@@ -243,7 +263,7 @@ var _ = Describe("Composite", func() {
 			},
 		}
 
-		err = reconciler.Reconcile(ctx, &parentResource, childrenB, false)
+		err = reconciler.Reconcile(ctx, owner, &parentResource, childrenB, false)
 		Expect(err).ToNot(HaveOccurred())
 
 		err = k8sClient.Get(ctx, parentKey, &parentResource)

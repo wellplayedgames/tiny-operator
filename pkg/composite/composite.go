@@ -142,7 +142,7 @@ type Reconciler struct {
 }
 
 // Reconcile child resources of a composite resource.
-func (r *Reconciler) Reconcile(ctx context.Context, parent runtime.Object, children []runtime.Object, dryRun bool) error {
+func (r *Reconciler) Reconcile(ctx context.Context, owner string, parent runtime.Object, children []runtime.Object, dryRun bool) error {
 	parentMeta, err := meta.Accessor(parent)
 	if err != nil {
 		return &permanentError{err}
@@ -161,7 +161,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, parent runtime.Object, child
 		deleteOptions = []client.DeleteOption{client.DryRunAll}
 	}
 
-	applyOptions := append(patchOptions, client.ForceOwnership, client.FieldOwner("games.wellplayed.composite"));
+	applyOptions := append(patchOptions, client.ForceOwnership, client.FieldOwner(owner))
 
 	parentKey := string(parentMeta.GetUID())
 	selector := labels.SelectorFromSet(labels.Set{
