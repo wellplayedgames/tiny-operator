@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 
 	"github.com/go-logr/logr"
-	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -143,7 +142,7 @@ type Reconciler struct {
 }
 
 // Reconcile child resources of a composite resource.
-func (r *Reconciler) Reconcile(ctx context.Context, parent runtime.Object, children []runtime.Object, dryRun bool) error {
+func (r *Reconciler) Reconcile(ctx context.Context, owner string, parent runtime.Object, children []runtime.Object, dryRun bool) error {
 	parentMeta, err := meta.Accessor(parent)
 	if err != nil {
 		return &permanentError{err}
@@ -152,17 +151,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, parent runtime.Object, child
 	log := r.Log
 	acc := AccessState(parentMeta)
 
-	var createOptions []client.CreateOption
 	var updateOptions []client.UpdateOption
 	var patchOptions []client.PatchOption
 	var deleteOptions []client.DeleteOption
 
 	if dryRun {
-		createOptions = []client.CreateOption{client.DryRunAll}
 		updateOptions = []client.UpdateOption{client.DryRunAll}
 		patchOptions = []client.PatchOption{client.DryRunAll}
 		deleteOptions = []client.DeleteOption{client.DryRunAll}
 	}
+
+	applyOptions := append(patchOptions, client.ForceOwnership, client.FieldOwner(owner))
 
 	parentKey := string(parentMeta.GetUID())
 	selector := labels.SelectorFromSet(labels.Set{
@@ -210,6 +209,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, parent runtime.Object, child
 		if err != nil {
 			return &permanentError{err}
 		}
+
+		// Ensure child GVK is set. (For structs this isn't true by default, but needed for apply.)
+		child.GetObjectKind().SetGroupVersionKind(gvk)
 	}
 
 	if state.EnsureKinds(desiredKinds) && !dryRun {
@@ -222,32 +224,29 @@ func (r *Reconciler) Reconcile(ctx context.Context, parent runtime.Object, child
 	// Update or create all child objects.
 	var passError error
 	desiredUIDs := make([]types.UID, 0, len(children))
-	for childIdx, child := range children {
-
-		tempCopy := child.DeepCopyObject()
-
-		err = r.Client.Patch(ctx, tempCopy, client.Merge, patchOptions...)
-		if errors.IsNotFound(err) {
-			// Reset the child here because Patch can cause changes to the
-			// resource which prevents it from being created!
-			tempCopy = child.DeepCopyObject()
-			err = r.Client.Create(ctx, tempCopy, createOptions...)
+	for _, child := range children {
+		objToPatch := child
+		if dryRun {
+			objToPatch = child.DeepCopyObject()
 		}
 
-		if err == nil && !dryRun {
-			children[childIdx] = tempCopy
-		} else if err != nil {
+		err := r.Client.Patch(ctx, objToPatch, client.Apply, applyOptions...)
+		if err != nil {
 			passError = tinyerrors.Append(passError, err)
 		}
 
-		acc, err := meta.Accessor(tempCopy)
-
+		acc, err := meta.Accessor(objToPatch)
 		if err != nil {
 			log.Error(err, "failed to access child metadata")
 			return &permanentError{err}
 		}
 
 		desiredUIDs = append(desiredUIDs, acc.GetUID())
+	}
+
+	// If updating any resources failed, fail now.
+	if passError != nil {
+		return passError
 	}
 
 	// Destroy all old objects.
@@ -287,7 +286,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, parent runtime.Object, child
 		}
 	}
 
-	// If updating any resources failed, fail now.
+	// If deleting any resources failed, fail now.
 	if passError != nil {
 		return passError
 	}
