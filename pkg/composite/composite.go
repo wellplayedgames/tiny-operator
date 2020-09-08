@@ -205,9 +205,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, owner string, parent runtime
 		meta.SetLabels(labels)
 
 		// Set resource owner to parent.
-		err = controllerutil.SetControllerReference(parentMeta, meta, r.Scheme)
-		if err != nil {
-			return &permanentError{err}
+		if meta.GetNamespace() != "" {
+			err = controllerutil.SetControllerReference(parentMeta, meta, r.Scheme)
+			if err != nil {
+				return &permanentError{err}
+			}
 		}
 
 		// Ensure child GVK is set. (For structs this isn't true by default, but needed for apply.)
