@@ -148,83 +148,98 @@ func (r *Reconciler) Reconcile(ctx context.Context, owner string, parent runtime
 		return &permanentError{err}
 	}
 
-	log := r.Log
 	acc := AccessState(parentMeta)
-
-	var updateOptions []client.UpdateOption
-	var patchOptions []client.PatchOption
-	var deleteOptions []client.DeleteOption
-
-	if dryRun {
-		updateOptions = []client.UpdateOption{client.DryRunAll}
-		patchOptions = []client.PatchOption{client.DryRunAll}
-		deleteOptions = []client.DeleteOption{client.DryRunAll}
-	}
-
-	applyOptions := append(patchOptions, client.ForceOwnership, client.FieldOwner(owner))
-
-	parentKey := string(parentMeta.GetUID())
-	selector := labels.SelectorFromSet(labels.Set{
-		parentLabel: parentKey,
-	})
 
 	state, err := acc.GetCompositeState()
 	if err != nil {
 		return &permanentError{err}
 	}
 
-	// Mark all new kinds, to make sure they can't get forgotten.
-	desiredKinds := make([]schema.GroupVersionKind, 0, len(children))
-
-	for _, child := range children {
-		// Add GVK of resource to the list of GVKs we are processing.
-		gvk, err := apiutil.GVKForObject(child, r.Scheme)
-		if err != nil {
-			return &permanentError{err}
-		}
-
-		idx := kindIndex(desiredKinds, gvk.GroupKind())
-
-		if idx >= 0 {
-			desiredKinds[idx] = gvk
-		} else {
-			desiredKinds = append(desiredKinds, gvk)
-		}
-
-		meta, err := meta.Accessor(child)
-		if err != nil {
-			return &permanentError{err}
-		}
-
-		// Associate with parent.
-		labels := meta.GetLabels()
-		if labels == nil {
-			labels = map[string]string{}
-		}
-		labels[parentLabel] = parentKey
-		meta.SetLabels(labels)
-
-		// Set resource owner to parent.
-		if meta.GetNamespace() != "" {
-			err = controllerutil.SetControllerReference(parentMeta, meta, r.Scheme)
-			if err != nil {
-				return &permanentError{err}
-			}
-		}
-
-		// Ensure child GVK is set. (For structs this isn't true by default, but needed for apply.)
-		child.GetObjectKind().SetGroupVersionKind(gvk)
+	desiredKinds, err := r.markDesiredKinds(ctx, parent, children, state, dryRun)
+	if err != nil {
+		return err
 	}
 
-	if state.EnsureKinds(desiredKinds) && !dryRun {
-		acc.SetCompositeState(state)
-		if err := r.Client.Update(ctx, parent, updateOptions...); err != nil {
-			return err
-		}
+	desiredUIDs, err := r.assertChildren(ctx, owner, children, dryRun)
+	if err != nil {
+		return err
 	}
 
-	// Update or create all child objects.
+	if err := r.prune(ctx, parent, state, desiredUIDs, desiredKinds, dryRun); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// ReconcileWithoutPrune reconciles child resources of a composite resource without removing any existing children.
+func (r *Reconciler) ReconcileWithoutPrune(ctx context.Context, owner string, parent runtime.Object, children []runtime.Object, dryRun bool) error {
+	parentMeta, err := meta.Accessor(parent)
+	if err != nil {
+		return &permanentError{err}
+	}
+
+	acc := AccessState(parentMeta)
+
+	state, err := acc.GetCompositeState()
+	if err != nil {
+		return &permanentError{err}
+	}
+
+	if _, err := r.markDesiredKinds(ctx, parent, children, state, dryRun); err != nil {
+		return err
+	}
+
+	if _, err := r.assertChildren(ctx, owner, children, dryRun); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Reconcile child resources of a composite resource.
+func (r *Reconciler) Prune(ctx context.Context, parent runtime.Object, children []runtime.Object, dryRun bool) error {
+	parentMeta, err := meta.Accessor(parent)
+	if err != nil {
+		return &permanentError{err}
+	}
+
+	acc := AccessState(parentMeta)
+
+	state, err := acc.GetCompositeState()
+	if err != nil {
+		return &permanentError{err}
+	}
+
+	desiredKinds, err := r.markDesiredKinds(ctx, parent, children, state, dryRun)
+	if err != nil {
+		return err
+	}
+
+	desiredUIDs, err := r.getDesiredUIDs(ctx, children, dryRun)
+	if err != nil {
+		return err
+	}
+
+	if err := r.prune(ctx, parent, state, desiredUIDs, desiredKinds, dryRun); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// assertChildren updates or creates all child objects.
+func (r *Reconciler) assertChildren(ctx context.Context, owner string, children []runtime.Object, dryRun bool) ([]types.UID, error) {
 	var passError error
+
+	var patchOptions []client.PatchOption
+
+	if dryRun {
+		patchOptions = []client.PatchOption{client.DryRunAll}
+	}
+
+	applyOptions := append(patchOptions, client.ForceOwnership, client.FieldOwner(owner))
+
 	desiredUIDs := make([]types.UID, 0, len(children))
 	for _, child := range children {
 		objToPatch := child
@@ -239,19 +254,141 @@ func (r *Reconciler) Reconcile(ctx context.Context, owner string, parent runtime
 
 		acc, err := meta.Accessor(objToPatch)
 		if err != nil {
-			log.Error(err, "failed to access child metadata")
-			return &permanentError{err}
+			r.Log.Error(err, "failed to access child metadata")
+			return nil, &permanentError{err}
 		}
 
 		desiredUIDs = append(desiredUIDs, acc.GetUID())
 	}
 
-	// If updating any resources failed, fail now.
-	if passError != nil {
-		return passError
+	return desiredUIDs, passError
+}
+
+// markDesiredKinds marks all new kinds, to make sure they can't get forgotten.
+func (r *Reconciler) markDesiredKinds(ctx context.Context, parent runtime.Object, children []runtime.Object, state *State, dryRun bool) ([]schema.GroupVersionKind, error) {
+	parentMeta, err := meta.Accessor(parent)
+	if err != nil {
+		return nil, &permanentError{err}
 	}
 
-	// Destroy all old objects.
+	acc := AccessState(parentMeta)
+
+	var updateOptions []client.UpdateOption
+
+	if dryRun {
+		updateOptions = []client.UpdateOption{client.DryRunAll}
+	}
+
+	parentKey := string(parentMeta.GetUID())
+
+	desiredKinds := make([]schema.GroupVersionKind, 0, len(children))
+
+	for _, child := range children {
+		// Add GVK of resource to the list of GVKs we are processing.
+		gvk, err := apiutil.GVKForObject(child, r.Scheme)
+		if err != nil {
+			return nil, &permanentError{err}
+		}
+
+		idx := kindIndex(desiredKinds, gvk.GroupKind())
+
+		if idx >= 0 {
+			desiredKinds[idx] = gvk
+		} else {
+			desiredKinds = append(desiredKinds, gvk)
+		}
+
+		meta, err := meta.Accessor(child)
+		if err != nil {
+			return nil, &permanentError{err}
+		}
+
+		// Associate with parent.
+		labels := meta.GetLabels()
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		labels[parentLabel] = parentKey
+		meta.SetLabels(labels)
+
+		// Set resource owner to parent.
+		if meta.GetNamespace() != "" {
+			err = controllerutil.SetControllerReference(parentMeta, meta, r.Scheme)
+			if err != nil {
+				return nil, &permanentError{err}
+			}
+		}
+
+		// Ensure child GVK is set. (For structs this isn't true by default, but needed for apply.)
+		child.GetObjectKind().SetGroupVersionKind(gvk)
+	}
+
+	if state.EnsureKinds(desiredKinds) && !dryRun {
+		acc.SetCompositeState(state)
+		if err := r.Client.Update(ctx, parent, updateOptions...); err != nil {
+			return nil, err
+		}
+	}
+
+	return desiredKinds, nil
+}
+
+// getDesiredUIDs retrieves the UIDs of all desired objects
+func (r *Reconciler) getDesiredUIDs(ctx context.Context, children []runtime.Object, dryRun bool) ([]types.UID, error) {
+	var passError error
+
+	desiredUIDs := make([]types.UID, 0, len(children))
+	for _, child := range children {
+		objToGet := child
+		if dryRun {
+			objToGet = child.DeepCopyObject()
+		}
+
+		key, err := client.ObjectKeyFromObject(objToGet)
+		if err != nil {
+			passError = tinyerrors.Append(passError, err)
+		}
+
+		if err := r.Client.Get(ctx, key, objToGet); err != nil {
+			passError = tinyerrors.Append(passError, err)
+		}
+
+		acc, err := meta.Accessor(objToGet)
+		if err != nil {
+			r.Log.Error(err, "failed to access child metadata")
+			return nil, &permanentError{err}
+		}
+
+		desiredUIDs = append(desiredUIDs, acc.GetUID())
+	}
+
+	return desiredUIDs, passError
+}
+
+// prune all old objects.
+func (r *Reconciler) prune(ctx context.Context, parent runtime.Object, state *State, desiredUIDs []types.UID, desiredKinds []schema.GroupVersionKind, dryRun bool) error {
+	parentMeta, err := meta.Accessor(parent)
+	if err != nil {
+		return &permanentError{err}
+	}
+
+	acc := AccessState(parentMeta)
+
+	var updateOptions []client.UpdateOption
+	var deleteOptions []client.DeleteOption
+
+	if dryRun {
+		updateOptions = []client.UpdateOption{client.DryRunAll}
+		deleteOptions = []client.DeleteOption{client.DryRunAll}
+	}
+
+	parentKey := string(parentMeta.GetUID())
+	selector := labels.SelectorFromSet(labels.Set{
+		parentLabel: parentKey,
+	})
+
+	var passError error
+
 	for _, gvk := range state.DeployedKinds {
 		var list unstructured.UnstructuredList
 		list.SetGroupVersionKind(gvk)
@@ -268,7 +405,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, owner string, parent runtime
 
 			acc, err := meta.Accessor(obj)
 			if err != nil {
-				log.Error(err, "failed to access child metadata")
+				r.Log.Error(err, "failed to access child metadata")
 				return &permanentError{err}
 			}
 
