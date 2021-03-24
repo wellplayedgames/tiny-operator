@@ -206,70 +206,16 @@ func (r *Reconciler) Prune(ctx context.Context, parent runtime.Object, children 
 
 	acc := AccessState(parentMeta)
 
-	var updateOptions []client.UpdateOption
-
-	if dryRun {
-		updateOptions = []client.UpdateOption{client.DryRunAll}
-	}
-
-	parentKey := string(parentMeta.GetUID())
-
 	state, err := acc.GetCompositeState()
 	if err != nil {
 		return &permanentError{err}
 	}
 
-	// Mark all new kinds, to make sure they can't get forgotten.
-	desiredKinds := make([]schema.GroupVersionKind, 0, len(children))
-
-	for _, child := range children {
-		// Add GVK of resource to the list of GVKs we are processing.
-		gvk, err := apiutil.GVKForObject(child, r.Scheme)
-		if err != nil {
-			return &permanentError{err}
-		}
-
-		idx := kindIndex(desiredKinds, gvk.GroupKind())
-
-		if idx >= 0 {
-			desiredKinds[idx] = gvk
-		} else {
-			desiredKinds = append(desiredKinds, gvk)
-		}
-
-		meta, err := meta.Accessor(child)
-		if err != nil {
-			return &permanentError{err}
-		}
-
-		// Associate with parent.
-		labels := meta.GetLabels()
-		if labels == nil {
-			labels = map[string]string{}
-		}
-		labels[parentLabel] = parentKey
-		meta.SetLabels(labels)
-
-		// Set resource owner to parent.
-		if meta.GetNamespace() != "" {
-			err = controllerutil.SetControllerReference(parentMeta, meta, r.Scheme)
-			if err != nil {
-				return &permanentError{err}
-			}
-		}
-
-		// Ensure child GVK is set. (For structs this isn't true by default, but needed for apply.)
-		child.GetObjectKind().SetGroupVersionKind(gvk)
+	desiredKinds, err := r.markDesiredKinds(ctx, parent, children, state, dryRun)
+	if err != nil {
+		return err
 	}
 
-	if state.EnsureKinds(desiredKinds) && !dryRun {
-		acc.SetCompositeState(state)
-		if err := r.Client.Update(ctx, parent, updateOptions...); err != nil {
-			return err
-		}
-	}
-
-	// Retrieve the UIDs of all desired objects
 	desiredUIDs, err := r.getDesiredUIDs(ctx, children, dryRun)
 	if err != nil {
 		return err
@@ -387,6 +333,7 @@ func (r *Reconciler) markDesiredKinds(ctx context.Context, parent runtime.Object
 	return desiredKinds, nil
 }
 
+// getDesiredUIDs retrieves the UIDs of all desired objects
 func (r *Reconciler) getDesiredUIDs(ctx context.Context, children []runtime.Object, dryRun bool) ([]types.UID, error) {
 	var passError error
 
@@ -491,5 +438,6 @@ func (r *Reconciler) prune(ctx context.Context, parent runtime.Object, state *St
 			return err
 		}
 	}
+
 	return nil
 }
