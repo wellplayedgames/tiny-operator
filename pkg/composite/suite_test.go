@@ -1,4 +1,4 @@
-package composite
+package composite_test
 
 import (
 	"context"
