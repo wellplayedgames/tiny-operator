@@ -191,8 +191,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, children []runtime.Object) e
 	return nil
 }
 
-// ReconcileWithoutPrune reconciles child resources of a composite resource without removing any existing children.
-func (r *Reconciler) ReconcileWithoutPrune(ctx context.Context, children []runtime.Object) error {
+// AssertChildren reconciles child resources of a composite resource without removing any existing children.
+func (r *Reconciler) AssertChildren(ctx context.Context, children []runtime.Object) error {
 	state, err := r.acc.GetCompositeState()
 	if err != nil {
 		return &permanentError{err}
