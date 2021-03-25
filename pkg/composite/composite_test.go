@@ -1,7 +1,8 @@
-package composite
+package composite_test
 
 import (
 	"context"
+	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -15,6 +16,8 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+
+	"github.com/wellplayedgames/tiny-operator/pkg/composite"
 )
 
 const (
@@ -22,7 +25,14 @@ const (
 )
 
 var _ = Describe("Composite", func() {
-	ctx := context.Background()
+	var ctx context.Context
+	var logger logr.Logger
+	var err error
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		logger = zap.New(zap.UseDevMode(true))
+	})
 
 	Context("reconciling newly created resource", func() {
 		var parentResource unstructured.Unstructured
@@ -92,15 +102,12 @@ var _ = Describe("Composite", func() {
 			Expect(err).ToNot(HaveOccurred())
 		})
 
-		var reconciler Reconciler
+		var reconciler *composite.Reconciler
 		BeforeEach(func() {
-			reconciler = Reconciler{
-				Client: k8sClient,
-				Log:    zap.New(zap.UseDevMode(true)),
-				Scheme: scheme.Scheme,
-			}
+			reconciler, err = composite.New(logger, k8sClient, scheme.Scheme, &parentResource, owner)
+			Expect(err).ToNot(HaveOccurred())
 
-			err := reconciler.Reconcile(ctx, owner, &parentResource, children, false)
+			err := reconciler.Reconcile(ctx, children)
 			Expect(err).ToNot(HaveOccurred())
 
 			err = k8sClient.Get(ctx, parentKey, &parentResource)
@@ -108,7 +115,7 @@ var _ = Describe("Composite", func() {
 		})
 
 		It("should write deployed kinds", func() {
-			accessor := AccessState(&parentResource)
+			accessor := composite.AccessState(&parentResource)
 			state, err := accessor.GetCompositeState()
 			Expect(err).ToNot(HaveOccurred())
 
@@ -142,7 +149,7 @@ var _ = Describe("Composite", func() {
 			}, &svc)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(svc.Labels[parentLabel]).To(Equal(string(parentResource.GetUID())))
+			Expect(svc.Labels[composite.ParentLabel]).To(Equal(string(parentResource.GetUID())))
 		})
 
 		It("shouldn't update ResourceVersion on next reconciliation", func() {
@@ -159,7 +166,7 @@ var _ = Describe("Composite", func() {
 				children[idx] = child.DeepCopyObject()
 			}
 
-			err := reconciler.Reconcile(ctx, owner, &parentResource, children, false)
+			err := reconciler.Reconcile(ctx, children)
 			Expect(err).ToNot(HaveOccurred())
 
 			for idx, child := range children {
@@ -180,7 +187,7 @@ var _ = Describe("Composite", func() {
 				children[idx] = child.DeepCopyObject()
 			}
 
-			err = reconciler.Reconcile(ctx, owner, &parentResource, children, false)
+			err = reconciler.Reconcile(ctx, children)
 			Expect(err).ToNot(HaveOccurred())
 
 			svc = children[0].(*corev1.Service)
@@ -196,7 +203,7 @@ var _ = Describe("Composite", func() {
 		parentResource.SetNamespace("default")
 		parentResource.SetGenerateName("my-resource-")
 
-		accessor := AccessState(&parentResource)
+		accessor := composite.AccessState(&parentResource)
 
 		err := k8sClient.Create(ctx, &parentResource)
 		Expect(err).ToNot(HaveOccurred())
@@ -213,11 +220,8 @@ var _ = Describe("Composite", func() {
 			Name:      parentResource.GetName(),
 		}
 
-		reconciler := Reconciler{
-			Client: k8sClient,
-			Log:    zap.New(zap.UseDevMode(true)),
-			Scheme: scheme.Scheme,
-		}
+		reconciler, err := composite.New(logger, k8sClient, scheme.Scheme, &parentResource, owner)
+		Expect(err).ToNot(HaveOccurred())
 
 		By("reconciling initial children")
 
@@ -239,7 +243,7 @@ var _ = Describe("Composite", func() {
 			},
 		}
 
-		err = reconciler.Reconcile(ctx, owner, &parentResource, childrenA, false)
+		err = reconciler.Reconcile(ctx, childrenA)
 		Expect(err).ToNot(HaveOccurred())
 
 		err = k8sClient.Get(ctx, parentKey, &parentResource)
@@ -254,6 +258,9 @@ var _ = Describe("Composite", func() {
 
 		By("reconciling second set of children")
 
+		reconciler, err = composite.New(logger, k8sClient, scheme.Scheme, &parentResource, owner)
+		Expect(err).ToNot(HaveOccurred())
+
 		childrenB := []runtime.Object{
 			&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
@@ -263,7 +270,7 @@ var _ = Describe("Composite", func() {
 			},
 		}
 
-		err = reconciler.Reconcile(ctx, owner, &parentResource, childrenB, false)
+		err = reconciler.Reconcile(ctx, childrenB)
 		Expect(err).ToNot(HaveOccurred())
 
 		err = k8sClient.Get(ctx, parentKey, &parentResource)

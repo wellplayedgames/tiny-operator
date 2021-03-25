@@ -3,6 +3,7 @@ package composite
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -20,8 +21,11 @@ import (
 )
 
 const (
-	compositeStateKey = "hive.wellplayed.games/composite-state"
-	parentLabel       = "hive.wellplayed.games/composite-parent"
+	// StateAnnotation is the key of the annotation used to store enough information about the comopsite's state
+	// to track child resource kinds so they can be pruned even between operator versions
+	StateAnnotation = "hive.wellplayed.games/composite-state"
+	// ParentLabel is the key of the label used to indicate which composite resource produced a given child resource
+	ParentLabel     = "hive.wellplayed.games/composite-parent"
 )
 
 type permanentError struct {
@@ -109,7 +113,7 @@ func (a *stateAccessor) GetCompositeState() (*State, error) {
 		return &state, nil
 	}
 
-	text, ok := anno[compositeStateKey]
+	text, ok := anno[StateAnnotation]
 	if !ok {
 		return &state, nil
 	}
@@ -129,68 +133,79 @@ func (a *stateAccessor) SetCompositeState(state *State) error {
 		anno = map[string]string{}
 	}
 
-	anno[compositeStateKey] = string(by)
+	anno[StateAnnotation] = string(by)
 	a.SetAnnotations(anno)
 	return nil
 }
 
 // Reconciler reconciles composite resources.
 type Reconciler struct {
-	Log    logr.Logger
-	Client client.Client
-	Scheme *runtime.Scheme
+	logger logr.Logger
+	client client.Client
+	scheme *runtime.Scheme
+	parent runtime.Object
+	owner  string
+
+	assertedUIDs  []types.UID
+	assertedKinds []schema.GroupVersionKind
+	parentMeta    metav1.Object
+	acc           StateAccessor
 }
 
-// Reconcile child resources of a composite resource.
-func (r *Reconciler) Reconcile(ctx context.Context, owner string, parent runtime.Object, children []runtime.Object, dryRun bool) error {
+func New(logger logr.Logger, client client.Client, scheme *runtime.Scheme, parent runtime.Object, owner string) (*Reconciler, error) {
 	parentMeta, err := meta.Accessor(parent)
 	if err != nil {
-		return &permanentError{err}
+		return nil, fmt.Errorf("unable to access parent meta: %w", err)
 	}
 
 	acc := AccessState(parentMeta)
 
-	state, err := acc.GetCompositeState()
+	return &Reconciler{
+		logger: logger,
+		client: client,
+		scheme: scheme,
+		parent: parent,
+		owner:  owner,
+
+		parentMeta: parentMeta,
+		acc:        acc,
+	}, nil
+}
+
+// Reconcile child resources of a composite resource.
+func (r *Reconciler) Reconcile(ctx context.Context, children []runtime.Object) error {
+	state, err := r.acc.GetCompositeState()
 	if err != nil {
 		return &permanentError{err}
 	}
 
-	desiredKinds, err := r.markDesiredKinds(ctx, parent, children, state, dryRun)
-	if err != nil {
+	if err := r.markDesiredKinds(ctx, children, state); err != nil {
 		return err
 	}
 
-	desiredUIDs, err := r.assertChildren(ctx, owner, children, dryRun)
-	if err != nil {
+	if err := r.assertChildren(ctx, children); err != nil {
 		return err
 	}
 
-	if err := r.prune(ctx, parent, state, desiredUIDs, desiredKinds, dryRun); err != nil {
+	if err := r.prune(ctx, state); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-// ReconcileWithoutPrune reconciles child resources of a composite resource without removing any existing children.
-func (r *Reconciler) ReconcileWithoutPrune(ctx context.Context, owner string, parent runtime.Object, children []runtime.Object, dryRun bool) error {
-	parentMeta, err := meta.Accessor(parent)
+// AssertChildren reconciles child resources of a composite resource without removing any existing children.
+func (r *Reconciler) AssertChildren(ctx context.Context, children []runtime.Object) error {
+	state, err := r.acc.GetCompositeState()
 	if err != nil {
 		return &permanentError{err}
 	}
 
-	acc := AccessState(parentMeta)
-
-	state, err := acc.GetCompositeState()
-	if err != nil {
-		return &permanentError{err}
-	}
-
-	if _, err := r.markDesiredKinds(ctx, parent, children, state, dryRun); err != nil {
+	if err := r.markDesiredKinds(ctx, children, state); err != nil {
 		return err
 	}
 
-	if _, err := r.assertChildren(ctx, owner, children, dryRun); err != nil {
+	if err := r.assertChildren(ctx, children); err != nil {
 		return err
 	}
 
@@ -198,30 +213,13 @@ func (r *Reconciler) ReconcileWithoutPrune(ctx context.Context, owner string, pa
 }
 
 // Reconcile child resources of a composite resource.
-func (r *Reconciler) Prune(ctx context.Context, parent runtime.Object, children []runtime.Object, dryRun bool) error {
-	parentMeta, err := meta.Accessor(parent)
+func (r *Reconciler) Prune(ctx context.Context) error {
+	state, err := r.acc.GetCompositeState()
 	if err != nil {
 		return &permanentError{err}
 	}
 
-	acc := AccessState(parentMeta)
-
-	state, err := acc.GetCompositeState()
-	if err != nil {
-		return &permanentError{err}
-	}
-
-	desiredKinds, err := r.markDesiredKinds(ctx, parent, children, state, dryRun)
-	if err != nil {
-		return err
-	}
-
-	desiredUIDs, err := r.getDesiredUIDs(ctx, children, dryRun)
-	if err != nil {
-		return err
-	}
-
-	if err := r.prune(ctx, parent, state, desiredUIDs, desiredKinds, dryRun); err != nil {
+	if err := r.prune(ctx, state); err != nil {
 		return err
 	}
 
@@ -229,78 +227,57 @@ func (r *Reconciler) Prune(ctx context.Context, parent runtime.Object, children 
 }
 
 // assertChildren updates or creates all child objects.
-func (r *Reconciler) assertChildren(ctx context.Context, owner string, children []runtime.Object, dryRun bool) ([]types.UID, error) {
+func (r *Reconciler) assertChildren(ctx context.Context, children []runtime.Object) error {
 	var passError error
 
 	var patchOptions []client.PatchOption
 
-	if dryRun {
-		patchOptions = []client.PatchOption{client.DryRunAll}
-	}
+	applyOptions := append(patchOptions, client.ForceOwnership, client.FieldOwner(r.owner))
 
-	applyOptions := append(patchOptions, client.ForceOwnership, client.FieldOwner(owner))
-
-	desiredUIDs := make([]types.UID, 0, len(children))
 	for _, child := range children {
 		objToPatch := child
-		if dryRun {
-			objToPatch = child.DeepCopyObject()
-		}
 
-		err := r.Client.Patch(ctx, objToPatch, client.Apply, applyOptions...)
+		err := r.client.Patch(ctx, objToPatch, client.Apply, applyOptions...)
 		if err != nil {
 			passError = tinyerrors.Append(passError, err)
 		}
 
 		acc, err := meta.Accessor(objToPatch)
 		if err != nil {
-			r.Log.Error(err, "failed to access child metadata")
-			return nil, &permanentError{err}
+			r.logger.Error(err, "failed to access child metadata")
+			return &permanentError{err}
 		}
 
-		desiredUIDs = append(desiredUIDs, acc.GetUID())
+		r.assertedUIDs = append(r.assertedUIDs, acc.GetUID())
 	}
 
-	return desiredUIDs, passError
+	return passError
 }
 
 // markDesiredKinds marks all new kinds, to make sure they can't get forgotten.
-func (r *Reconciler) markDesiredKinds(ctx context.Context, parent runtime.Object, children []runtime.Object, state *State, dryRun bool) ([]schema.GroupVersionKind, error) {
-	parentMeta, err := meta.Accessor(parent)
-	if err != nil {
-		return nil, &permanentError{err}
-	}
-
-	acc := AccessState(parentMeta)
-
+func (r *Reconciler) markDesiredKinds(ctx context.Context, children []runtime.Object, state *State) error {
 	var updateOptions []client.UpdateOption
 
-	if dryRun {
-		updateOptions = []client.UpdateOption{client.DryRunAll}
-	}
-
-	parentKey := string(parentMeta.GetUID())
-
-	desiredKinds := make([]schema.GroupVersionKind, 0, len(children))
+	parentKey := string(r.parentMeta.GetUID())
 
 	for _, child := range children {
 		// Add GVK of resource to the list of GVKs we are processing.
-		gvk, err := apiutil.GVKForObject(child, r.Scheme)
+		gvk, err := apiutil.GVKForObject(child, r.scheme)
 		if err != nil {
-			return nil, &permanentError{err}
+			return &permanentError{err}
 		}
 
-		idx := kindIndex(desiredKinds, gvk.GroupKind())
+		idx := kindIndex(r.assertedKinds, gvk.GroupKind())
 
 		if idx >= 0 {
-			desiredKinds[idx] = gvk
+			r.assertedKinds[idx] = gvk
 		} else {
-			desiredKinds = append(desiredKinds, gvk)
+			r.assertedKinds = append(r.assertedKinds, gvk)
 		}
 
 		meta, err := meta.Accessor(child)
 		if err != nil {
-			return nil, &permanentError{err}
+			return &permanentError{err}
 		}
 
 		// Associate with parent.
@@ -308,14 +285,14 @@ func (r *Reconciler) markDesiredKinds(ctx context.Context, parent runtime.Object
 		if labels == nil {
 			labels = map[string]string{}
 		}
-		labels[parentLabel] = parentKey
+		labels[ParentLabel] = parentKey
 		meta.SetLabels(labels)
 
 		// Set resource owner to parent.
 		if meta.GetNamespace() != "" {
-			err = controllerutil.SetControllerReference(parentMeta, meta, r.Scheme)
+			err = controllerutil.SetControllerReference(r.parentMeta, meta, r.scheme)
 			if err != nil {
-				return nil, &permanentError{err}
+				return &permanentError{err}
 			}
 		}
 
@@ -323,39 +300,36 @@ func (r *Reconciler) markDesiredKinds(ctx context.Context, parent runtime.Object
 		child.GetObjectKind().SetGroupVersionKind(gvk)
 	}
 
-	if state.EnsureKinds(desiredKinds) && !dryRun {
-		acc.SetCompositeState(state)
-		if err := r.Client.Update(ctx, parent, updateOptions...); err != nil {
-			return nil, err
+	if state.EnsureKinds(r.assertedKinds) {
+		r.acc.SetCompositeState(state)
+		if err := r.client.Update(ctx, r.parent, updateOptions...); err != nil {
+			return err
 		}
 	}
 
-	return desiredKinds, nil
+	return nil
 }
 
 // getDesiredUIDs retrieves the UIDs of all desired objects
-func (r *Reconciler) getDesiredUIDs(ctx context.Context, children []runtime.Object, dryRun bool) ([]types.UID, error) {
+func (r *Reconciler) getDesiredUIDs(ctx context.Context, children []runtime.Object) ([]types.UID, error) {
 	var passError error
 
 	desiredUIDs := make([]types.UID, 0, len(children))
 	for _, child := range children {
 		objToGet := child
-		if dryRun {
-			objToGet = child.DeepCopyObject()
-		}
 
 		key, err := client.ObjectKeyFromObject(objToGet)
 		if err != nil {
 			passError = tinyerrors.Append(passError, err)
 		}
 
-		if err := r.Client.Get(ctx, key, objToGet); err != nil {
+		if err := r.client.Get(ctx, key, objToGet); err != nil {
 			passError = tinyerrors.Append(passError, err)
 		}
 
 		acc, err := meta.Accessor(objToGet)
 		if err != nil {
-			r.Log.Error(err, "failed to access child metadata")
+			r.logger.Error(err, "failed to access child metadata")
 			return nil, &permanentError{err}
 		}
 
@@ -366,25 +340,13 @@ func (r *Reconciler) getDesiredUIDs(ctx context.Context, children []runtime.Obje
 }
 
 // prune all old objects.
-func (r *Reconciler) prune(ctx context.Context, parent runtime.Object, state *State, desiredUIDs []types.UID, desiredKinds []schema.GroupVersionKind, dryRun bool) error {
-	parentMeta, err := meta.Accessor(parent)
-	if err != nil {
-		return &permanentError{err}
-	}
-
-	acc := AccessState(parentMeta)
-
+func (r *Reconciler) prune(ctx context.Context, state *State) error {
 	var updateOptions []client.UpdateOption
 	var deleteOptions []client.DeleteOption
 
-	if dryRun {
-		updateOptions = []client.UpdateOption{client.DryRunAll}
-		deleteOptions = []client.DeleteOption{client.DryRunAll}
-	}
-
-	parentKey := string(parentMeta.GetUID())
+	parentKey := string(r.parentMeta.GetUID())
 	selector := labels.SelectorFromSet(labels.Set{
-		parentLabel: parentKey,
+		ParentLabel: parentKey,
 	})
 
 	var passError error
@@ -394,7 +356,7 @@ func (r *Reconciler) prune(ctx context.Context, parent runtime.Object, state *St
 		list.SetGroupVersionKind(gvk)
 
 		match := client.MatchingLabelsSelector{Selector: selector}
-		err := r.Client.List(ctx, &list, match)
+		err := r.client.List(ctx, &list, match)
 		if err != nil {
 			return err
 		}
@@ -405,15 +367,15 @@ func (r *Reconciler) prune(ctx context.Context, parent runtime.Object, state *St
 
 			acc, err := meta.Accessor(obj)
 			if err != nil {
-				r.Log.Error(err, "failed to access child metadata")
+				r.logger.Error(err, "failed to access child metadata")
 				return &permanentError{err}
 			}
 
-			if hasUID(desiredUIDs, acc.GetUID()) {
+			if hasUID(r.assertedUIDs, acc.GetUID()) {
 				return nil
 			}
 
-			err = r.Client.Delete(ctx, obj, deleteOptions...)
+			err = r.client.Delete(ctx, obj, deleteOptions...)
 			if err != nil {
 				passError = tinyerrors.Append(passError, err)
 			}
@@ -431,10 +393,10 @@ func (r *Reconciler) prune(ctx context.Context, parent runtime.Object, state *St
 	}
 
 	// Remove old types from state.
-	if (len(state.DeployedKinds) != len(desiredKinds)) && !dryRun {
-		state.DeployedKinds = desiredKinds
-		acc.SetCompositeState(state)
-		if err := r.Client.Update(ctx, parent, updateOptions...); err != nil {
+	if len(state.DeployedKinds) != len(r.assertedKinds) {
+		state.DeployedKinds = r.assertedKinds
+		r.acc.SetCompositeState(state)
+		if err := r.client.Update(ctx, r.parent, updateOptions...); err != nil {
 			return err
 		}
 	}
