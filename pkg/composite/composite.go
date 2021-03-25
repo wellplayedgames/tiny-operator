@@ -21,7 +21,10 @@ import (
 )
 
 const (
+	// StateAnnotation is the key of the annotation used to store enough information about the comopsite's state
+	// to track child resource kinds so they can be pruned even between operator versions
 	StateAnnotation = "hive.wellplayed.games/composite-state"
+	// ParentLabel is the key of the label used to indicate which composite resource produced a given child resource
 	ParentLabel     = "hive.wellplayed.games/composite-parent"
 )
 
