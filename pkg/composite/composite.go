@@ -273,22 +273,22 @@ func (r *Reconciler) markDesiredKinds(ctx context.Context, children []runtime.Ob
 			r.assertedKinds = append(r.assertedKinds, gvk)
 		}
 
-		meta, err := meta.Accessor(child)
+		childMeta, err := meta.Accessor(child)
 		if err != nil {
 			return &permanentError{err}
 		}
 
 		// Associate with parent.
-		labels := meta.GetLabels()
-		if labels == nil {
-			labels = map[string]string{}
+		childLabels := childMeta.GetLabels()
+		if childLabels == nil {
+			childLabels = map[string]string{}
 		}
-		labels[ParentLabel] = parentKey
-		meta.SetLabels(labels)
+		childLabels[ParentLabel] = parentKey
+		childMeta.SetLabels(childLabels)
 
 		// Set resource owner to parent.
-		if meta.GetNamespace() != "" {
-			err = controllerutil.SetControllerReference(r.parentMeta, meta, r.scheme)
+		if childMeta.GetNamespace() != "" {
+			err = controllerutil.SetControllerReference(r.parentMeta, childMeta, r.scheme)
 			if err != nil {
 				return &permanentError{err}
 			}
