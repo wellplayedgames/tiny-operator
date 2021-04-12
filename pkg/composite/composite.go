@@ -256,8 +256,6 @@ func (r *Reconciler) assertChildren(ctx context.Context, children []runtime.Obje
 
 // markDesiredKinds marks all new kinds, to make sure they can't get forgotten.
 func (r *Reconciler) markDesiredKinds(ctx context.Context, children []runtime.Object, state *State) error {
-	var updateOptions []client.UpdateOption
-
 	parentKey := string(r.parentMeta.GetUID())
 
 	for _, child := range children {
@@ -275,22 +273,22 @@ func (r *Reconciler) markDesiredKinds(ctx context.Context, children []runtime.Ob
 			r.assertedKinds = append(r.assertedKinds, gvk)
 		}
 
-		meta, err := meta.Accessor(child)
+		childMeta, err := meta.Accessor(child)
 		if err != nil {
 			return &permanentError{err}
 		}
 
 		// Associate with parent.
-		labels := meta.GetLabels()
-		if labels == nil {
-			labels = map[string]string{}
+		childLabels := childMeta.GetLabels()
+		if childLabels == nil {
+			childLabels = map[string]string{}
 		}
-		labels[ParentLabel] = parentKey
-		meta.SetLabels(labels)
+		childLabels[ParentLabel] = parentKey
+		childMeta.SetLabels(childLabels)
 
 		// Set resource owner to parent.
-		if meta.GetNamespace() != "" {
-			err = controllerutil.SetControllerReference(r.parentMeta, meta, r.scheme)
+		if childMeta.GetNamespace() != "" {
+			err = controllerutil.SetControllerReference(r.parentMeta, childMeta, r.scheme)
 			if err != nil {
 				return &permanentError{err}
 			}
@@ -301,8 +299,9 @@ func (r *Reconciler) markDesiredKinds(ctx context.Context, children []runtime.Ob
 	}
 
 	if state.EnsureKinds(r.assertedKinds) {
-		r.acc.SetCompositeState(state)
-		if err := r.client.Update(ctx, r.parent, updateOptions...); err != nil {
+		original := r.parent.DeepCopyObject()
+		_ = r.acc.SetCompositeState(state)
+		if err := r.client.Patch(ctx, r.parent, client.MergeFrom(original)); err != nil {
 			return err
 		}
 	}
@@ -341,9 +340,6 @@ func (r *Reconciler) getDesiredUIDs(ctx context.Context, children []runtime.Obje
 
 // prune all old objects.
 func (r *Reconciler) prune(ctx context.Context, state *State) error {
-	var updateOptions []client.UpdateOption
-	var deleteOptions []client.DeleteOption
-
 	parentKey := string(r.parentMeta.GetUID())
 	selector := labels.SelectorFromSet(labels.Set{
 		ParentLabel: parentKey,
@@ -375,7 +371,7 @@ func (r *Reconciler) prune(ctx context.Context, state *State) error {
 				return nil
 			}
 
-			err = r.client.Delete(ctx, obj, deleteOptions...)
+			err = r.client.Delete(ctx, obj)
 			if err != nil {
 				passError = tinyerrors.Append(passError, err)
 			}
@@ -394,9 +390,10 @@ func (r *Reconciler) prune(ctx context.Context, state *State) error {
 
 	// Remove old types from state.
 	if len(state.DeployedKinds) != len(r.assertedKinds) {
+		original := r.parent.DeepCopyObject()
 		state.DeployedKinds = r.assertedKinds
-		r.acc.SetCompositeState(state)
-		if err := r.client.Update(ctx, r.parent, updateOptions...); err != nil {
+		_ = r.acc.SetCompositeState(state)
+		if err := r.client.Patch(ctx, r.parent, client.MergeFrom(original)); err != nil {
 			return err
 		}
 	}
