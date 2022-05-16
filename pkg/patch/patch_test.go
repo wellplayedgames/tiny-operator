@@ -96,13 +96,11 @@ func (f fakeClient) Status() client.StatusWriter {
 }
 
 func (f fakeClient) Scheme() *runtime.Scheme {
-	//TODO implement me
-	panic("implement me")
+	panic("unimplemented")
 }
 
 func (f fakeClient) RESTMapper() meta.RESTMapper {
-	//TODO implement me
-	panic("implement me")
+	panic("unimplemented")
 }
 
 var _ client.Client = &fakeClient{}
