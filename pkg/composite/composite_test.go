@@ -10,7 +10,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -37,8 +36,8 @@ var _ = Describe("Composite", func() {
 	Context("reconciling newly created resource", func() {
 		var parentResource unstructured.Unstructured
 		var parentKey types.NamespacedName
-		var sourceChildren []runtime.Object
-		var children []runtime.Object
+		var sourceChildren []client.Object
+		var children []client.Object
 
 		BeforeEach(func() {
 			parentResource = unstructured.Unstructured{}
@@ -54,7 +53,7 @@ var _ = Describe("Composite", func() {
 				Name:      parentResource.GetName(),
 			}
 
-			sourceChildren = []runtime.Object{
+			sourceChildren = []client.Object{
 				&corev1.Service{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "service-1",
@@ -63,9 +62,9 @@ var _ = Describe("Composite", func() {
 					Spec: corev1.ServiceSpec{
 						Ports: []corev1.ServicePort{
 							{
-								Name: "http",
+								Name:     "http",
 								Protocol: corev1.ProtocolTCP,
-								Port: 80,
+								Port:     80,
 							},
 						},
 					},
@@ -78,18 +77,18 @@ var _ = Describe("Composite", func() {
 					Spec: corev1.ServiceSpec{
 						Ports: []corev1.ServicePort{
 							{
-								Name: "http",
+								Name:     "http",
 								Protocol: corev1.ProtocolTCP,
-								Port: 80,
+								Port:     80,
 							},
 						},
 					},
 				},
 			}
 
-			children = make([]runtime.Object, len(sourceChildren))
+			children = make([]client.Object, len(sourceChildren))
 			for idx, child := range sourceChildren {
-				children[idx] = child.DeepCopyObject()
+				children[idx] = child.DeepCopyObject().(client.Object)
 			}
 		})
 
@@ -163,7 +162,7 @@ var _ = Describe("Composite", func() {
 			}
 
 			for idx, child := range sourceChildren {
-				children[idx] = child.DeepCopyObject()
+				children[idx] = child.DeepCopyObject().(client.Object)
 			}
 
 			err := reconciler.Reconcile(ctx, children)
@@ -184,7 +183,7 @@ var _ = Describe("Composite", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			for idx, child := range sourceChildren {
-				children[idx] = child.DeepCopyObject()
+				children[idx] = child.DeepCopyObject().(client.Object)
 			}
 
 			err = reconciler.Reconcile(ctx, children)
@@ -225,7 +224,7 @@ var _ = Describe("Composite", func() {
 
 		By("reconciling initial children")
 
-		childrenA := []runtime.Object{
+		childrenA := []client.Object{
 			&corev1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "my-service",
@@ -234,9 +233,9 @@ var _ = Describe("Composite", func() {
 				Spec: corev1.ServiceSpec{
 					Ports: []corev1.ServicePort{
 						{
-							Name: "http",
+							Name:     "http",
 							Protocol: corev1.ProtocolTCP,
-							Port: 80,
+							Port:     80,
 						},
 					},
 				},
@@ -261,7 +260,7 @@ var _ = Describe("Composite", func() {
 		reconciler, err = composite.New(logger, k8sClient, scheme.Scheme, &parentResource, owner)
 		Expect(err).ToNot(HaveOccurred())
 
-		childrenB := []runtime.Object{
+		childrenB := []client.Object{
 			&corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "my-config-map",

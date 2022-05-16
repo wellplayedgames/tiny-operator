@@ -6,6 +6,7 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -19,7 +20,7 @@ func (b brokenPatcher) Type() types.PatchType {
 	return "broken"
 }
 
-func (b brokenPatcher) Data(obj runtime.Object) ([]byte, error) {
+func (b brokenPatcher) Data(obj client.Object) ([]byte, error) {
 	return nil, fmt.Errorf("why was I made to feel pain")
 }
 
@@ -52,46 +53,54 @@ func newFakeClient() fakeClient {
 	}
 }
 
-func (f fakeStatusWriter) Update(context.Context, runtime.Object, ...client.UpdateOption) error {
+func (f fakeStatusWriter) Update(context.Context, client.Object, ...client.UpdateOption) error {
 	panic("unimplemented")
 }
 
-func (f *fakeStatusWriter) Patch(context.Context, runtime.Object, client.Patch, ...client.PatchOption) error {
+func (f *fakeStatusWriter) Patch(context.Context, client.Object, client.Patch, ...client.PatchOption) error {
 	f.state.patchStatusCalled = true
 	return nil
 }
 
-func (f fakeClient) Get(context.Context, client.ObjectKey, runtime.Object) error {
+func (f fakeClient) Get(context.Context, client.ObjectKey, client.Object) error {
 	panic("unimplemented")
 }
 
-func (f fakeClient) List(context.Context, runtime.Object, ...client.ListOption) error {
+func (f fakeClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 	panic("unimplemented")
 }
 
-func (f fakeClient) Create(context.Context, runtime.Object, ...client.CreateOption) error {
+func (f fakeClient) Create(context.Context, client.Object, ...client.CreateOption) error {
 	panic("unimplemented")
 }
 
-func (f fakeClient) Delete(context.Context, runtime.Object, ...client.DeleteOption) error {
+func (f fakeClient) Delete(context.Context, client.Object, ...client.DeleteOption) error {
 	panic("unimplemented")
 }
 
-func (f fakeClient) Update(context.Context, runtime.Object, ...client.UpdateOption) error {
+func (f fakeClient) Update(context.Context, client.Object, ...client.UpdateOption) error {
 	panic("unimplemented")
 }
 
-func (f fakeClient) Patch(context.Context, runtime.Object, client.Patch, ...client.PatchOption) error {
+func (f fakeClient) Patch(context.Context, client.Object, client.Patch, ...client.PatchOption) error {
 	f.state.patchCalled = true
 	return nil
 }
 
-func (f fakeClient) DeleteAllOf(context.Context, runtime.Object, ...client.DeleteAllOfOption) error {
+func (f fakeClient) DeleteAllOf(context.Context, client.Object, ...client.DeleteAllOfOption) error {
 	panic("unimplemented")
 }
 
 func (f fakeClient) Status() client.StatusWriter {
 	return &f.statusWriter
+}
+
+func (f fakeClient) Scheme() *runtime.Scheme {
+	panic("unimplemented")
+}
+
+func (f fakeClient) RESTMapper() meta.RESTMapper {
+	panic("unimplemented")
 }
 
 var _ client.Client = &fakeClient{}
