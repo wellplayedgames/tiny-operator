@@ -42,7 +42,7 @@ func TestAPIs(t *testing.T) {
 
 var _ = BeforeSuite(func(done Done) {
 	ctx := context.Background()
-	logf.SetLogger(zap.LoggerTo(GinkgoWriter, true))
+	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{}
@@ -88,7 +88,7 @@ var _ = BeforeSuite(func(done Done) {
 
 	time.Sleep(250 * time.Millisecond)
 
-	Eventually(func() error { return k8sClient.Get(ctx, client.ObjectKey{ Name: crd.Name }, &crd) }).
+	Eventually(func() error { return k8sClient.Get(ctx, client.ObjectKey{Name: crd.Name}, &crd) }).
 		Should(Succeed())
 
 	close(done)
